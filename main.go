@@ -23,16 +23,16 @@ type SockIoSIDResponse struct {
 	PingTimeout  int
 }
 
-var websocket_addr = flag.String("addr", "irc.hugot.nl:443", "http service address")
+var webSocketAddr = flag.String("addr", "irc.hugot.nl:443", "http service address")
 
-var sockio_garbage_regexp = regexp.MustCompile("^[^\\[\\{]*|[^\\]\\}]*$")
+var sockIOGarbageRegExp = regexp.MustCompile("^[^\\[\\{]*|[^\\]\\}]*$")
 
 func removeSockIOGarbage(str string) string {
-	return sockio_garbage_regexp.ReplaceAllString(str, "")
+	return sockIOGarbageRegExp.ReplaceAllString(str, "")
 }
 
 func getSID() (string, error) {
-	res, err := http.Get(fmt.Sprintf("https://%s/socket.io/?EIO=3&transport=polling", *websocket_addr))
+	res, err := http.Get(fmt.Sprintf("https://%s/socket.io/?EIO=3&transport=polling", *webSocketAddr))
 	if err != nil {
 		return "", err
 	}
@@ -41,11 +41,11 @@ func getSID() (string, error) {
 		return "", err
 	}
 
-	json_string := removeSockIOGarbage(string(body))
+	JSONString := removeSockIOGarbage(string(body))
 
 	var data SockIoSIDResponse
 
-	json.Unmarshal([]byte(json_string), &data)
+	json.Unmarshal([]byte(JSONString), &data)
 
 	return data.Sid, nil
 }
@@ -63,7 +63,7 @@ func main() {
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt)
 
-	uri := url.URL{Scheme: "wss", Host: *websocket_addr, Path: fmt.Sprintf("/socket.io/?EIO=3&transport=websocket&sid=%s", sid)}
+	uri := url.URL{Scheme: "wss", Host: *webSocketAddr, Path: fmt.Sprintf("/socket.io/?EIO=3&transport=websocket&sid=%s", sid)}
 
 	dialer := &websocket.Dialer{
 		Proxy:             http.ProxyFromEnvironment,
@@ -88,7 +88,14 @@ func main() {
 
 		log.Fatal("dial:", err)
 	}
-	defer socket.Close()
+
+	defer func() {
+		err := socket.Close()
+
+		if err != nil {
+			fmt.Println(err)
+		}
+	}()
 
 	done := make(chan struct{})
 
