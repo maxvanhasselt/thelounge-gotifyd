@@ -63,7 +63,12 @@ func main() {
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt)
 
-	uri := url.URL{Scheme: "wss", Host: *webSocketAddr, Path: fmt.Sprintf("/socket.io/?EIO=3&transport=websocket&sid=%s", sid)}
+	uri := url.URL{
+		Scheme:   "wss",
+		Host:     *webSocketAddr,
+		Path:     "/socket.io/",
+		RawQuery: fmt.Sprintf("EIO=3&transport=websocket&sid=%s", url.QueryEscape(sid)),
+	}
 
 	dialer := &websocket.Dialer{
 		Proxy:             http.ProxyFromEnvironment,
