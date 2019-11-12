@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -128,7 +129,46 @@ type MessageArray struct {
 	} `json:"msg"`
 }
 
-func makeHandleMessageClosure(socket *websocket.Conn) func([]byte) {
+type Gotification struct {
+	Title   string `json:"title"`
+	Message string `json:"message"`
+}
+
+func makeGotifiacationClosure(url *string, apiKey *string) func(*Gotification) {
+	return func(notifcation *Gotification) {
+		fmt.Println("sending notification to gotify server")
+		jsonString, err := json.Marshal(notifcation)
+
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		req, err := http.NewRequest("POST", fmt.Sprintf("%s/message", *url), bytes.NewBuffer(jsonString))
+
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		req.Header.Set("X-Gotify-Key", *apiKey)
+		req.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{}
+
+		resp, err := client.Do(req)
+
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		body, _ := ioutil.ReadAll(resp.Body)
+
+		fmt.Println(resp.Status, string(body))
+
+		defer resp.Body.Close()
+	}
+}
+
+func makeHandleMessageClosure(socket *websocket.Conn, gotifyer func(*Gotification)) func([]byte) {
 	return func(message []byte) {
 		messageString := string(message)
 
@@ -163,11 +203,18 @@ func makeHandleMessageClosure(socket *websocket.Conn) func([]byte) {
 		if messageArray.MessageType == "msg" &&
 			messageStruct.Msg.Highlight {
 			fmt.Printf("Received message from %s containing %s\n", messageStruct.Msg.From.Nick, messageStruct.Msg.Text)
+
+			gotification := &Gotification{
+				Title:   fmt.Sprintf("Message from %s", messageStruct.Msg.From.Nick),
+				Message: messageStruct.Msg.Text,
+			}
+
+			gotifyer(gotification)
 		}
 	}
 }
 
-func startMainLoop(socket *websocket.Conn) {
+func startMainLoop(socket *websocket.Conn, gotifyer func(*Gotification)) {
 	defer func() {
 		err := socket.Close()
 
@@ -178,7 +225,7 @@ func startMainLoop(socket *websocket.Conn) {
 
 	done := make(chan struct{})
 
-	handleMessage := makeHandleMessageClosure(socket)
+	handleMessage := makeHandleMessageClosure(socket, gotifyer)
 
 	go func() {
 		defer close(done)
@@ -196,8 +243,7 @@ func startMainLoop(socket *websocket.Conn) {
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt)
 
-	//login(socket)
-
+	// Socket.io wants some probing to happen
 	socket.WriteMessage(websocket.TextMessage, []byte("2probe"))
 
 	for {
@@ -226,8 +272,9 @@ func startMainLoop(socket *websocket.Conn) {
 }
 
 func main() {
-
-	webSocketAddr := flag.String("addr", "irc.hugot.nl:443", "http service address")
+	webSocketAddr := flag.String("addr", "irc.hugot.nl:443", "TheLounge host")
+	gotifyUrl := flag.String("gotify-url", "https://gotify.code-cloppers.com", "Gotify HTTP address")
+	gotifyKey := flag.String("gotify-key", "", "Gotify application key")
 
 	flag.Parse()
 	log.SetFlags(0)
@@ -242,5 +289,6 @@ func main() {
 		log.Fatal("dial:", err)
 	}
 
-	startMainLoop(socket)
+	gotifyer := makeGotifiacationClosure(gotifyUrl, gotifyKey)
+	startMainLoop(socket, gotifyer)
 }
