@@ -60,8 +60,6 @@ func makeLoginClosure(c *Config) func(*websocket.Conn) error {
 
 		loginMessage := fmt.Sprintf("%s[\"auth\",%s]", LOGIN_DATA_PREFIX, loginJsonString)
 
-		fmt.Println(loginMessage)
-
 		socket.WriteMessage(websocket.TextMessage, []byte(loginMessage))
 
 		return nil
