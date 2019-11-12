@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"gopkg.in/yaml.v2"
 )
 
 type LoginJson struct {
@@ -27,6 +28,45 @@ type SockIoSIDResponse struct {
 	Upgrades     []string
 	PingInterval int
 	PingTimeout  int
+}
+
+type Config struct {
+	GotifyKey string `yaml:"gotifykey"`
+	Username  string `yaml:"username"`
+	Password  string `yaml:"password"`
+}
+
+func (c *Config) fromFile(configFile string) error {
+	b, err := ioutil.ReadFile(configFile)
+	if err != nil {
+		return err
+	}
+
+	return yaml.Unmarshal(b, c)
+}
+
+func makeLoginClosure(c *Config) func(*websocket.Conn) error {
+	return func(socket *websocket.Conn) error {
+		loginJson := &LoginJson{
+			Username: c.Username,
+			Password: c.Password,
+		}
+
+		loginJsonString, err := json.Marshal(loginJson)
+
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		loginMessage := fmt.Sprintf("%s[\"auth\",%s]", LOGIN_DATA_PREFIX, loginJsonString)
+
+		fmt.Println(loginMessage)
+
+		socket.WriteMessage(websocket.TextMessage, []byte(loginMessage))
+
+		return nil
+	}
+
 }
 
 var sockIOGarbageRegExp = regexp.MustCompile("^[^\\[\\{]*|[^\\]\\}]*$")
@@ -90,27 +130,6 @@ func connect(webSocketAddr *string) (*websocket.Conn, *http.Response, error) {
 
 const LOGIN_DATA_PREFIX = "42"
 
-func login(socket *websocket.Conn) error {
-	loginJson := &LoginJson{
-		Username: "test-user",
-		Password: "barry",
-	}
-
-	loginJsonString, err := json.Marshal(loginJson)
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	loginMessage := fmt.Sprintf("%s[\"auth\",%s]", LOGIN_DATA_PREFIX, loginJsonString)
-
-	fmt.Println(loginMessage)
-
-	socket.WriteMessage(websocket.TextMessage, []byte(loginMessage))
-
-	return nil
-}
-
 type MessageArray struct {
 	MessageType string
 	Message     struct {
@@ -168,10 +187,9 @@ func makeGotifiacationClosure(url *string, apiKey *string) func(*Gotification) {
 	}
 }
 
-func makeHandleMessageClosure(socket *websocket.Conn, gotifyer func(*Gotification)) func([]byte) {
+func makeHandleMessageClosure(socket *websocket.Conn, gotifyer func(*Gotification), login func(*websocket.Conn) error) func([]byte) {
 	return func(message []byte) {
 		messageString := string(message)
-
 		if messageString == "3probe" {
 			fmt.Println("Received 3probe, nice! Logging in...")
 			socket.WriteMessage(websocket.TextMessage, []byte("5"))
@@ -214,7 +232,7 @@ func makeHandleMessageClosure(socket *websocket.Conn, gotifyer func(*Gotificatio
 	}
 }
 
-func startMainLoop(socket *websocket.Conn, gotifyer func(*Gotification)) {
+func startMainLoop(socket *websocket.Conn, gotifyer func(*Gotification), c *Config) {
 	defer func() {
 		err := socket.Close()
 
@@ -225,7 +243,8 @@ func startMainLoop(socket *websocket.Conn, gotifyer func(*Gotification)) {
 
 	done := make(chan struct{})
 
-	handleMessage := makeHandleMessageClosure(socket, gotifyer)
+	login := makeLoginClosure(c)
+	handleMessage := makeHandleMessageClosure(socket, gotifyer, login)
 
 	go func() {
 		defer close(done)
@@ -274,9 +293,25 @@ func startMainLoop(socket *websocket.Conn, gotifyer func(*Gotification)) {
 func main() {
 	webSocketAddr := flag.String("addr", "irc.hugot.nl:443", "TheLounge host")
 	gotifyUrl := flag.String("gotify-url", "https://gotify.code-cloppers.com", "Gotify HTTP address")
-	gotifyKey := flag.String("gotify-key", "", "Gotify application key")
+	//gotifyKey := flag.String("gotify-key", "", "Gotify application key")
 
 	flag.Parse()
+	if flag.NArg() == 0 {
+		fmt.Println("Missing required parameter: CONFIG_PATH")
+		flag.Usage()
+		os.Exit(1)
+	}
+
+	envPath := flag.Arg(0)
+
+	var c Config
+	err := c.fromFile(envPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	gotifyKey := &c.GotifyKey
+
 	log.SetFlags(0)
 
 	socket, resp, err := connect(webSocketAddr)
@@ -290,5 +325,5 @@ func main() {
 	}
 
 	gotifyer := makeGotifiacationClosure(gotifyUrl, gotifyKey)
-	startMainLoop(socket, gotifyer)
+	startMainLoop(socket, gotifyer, &c)
 }
