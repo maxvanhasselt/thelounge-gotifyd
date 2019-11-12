@@ -16,6 +16,11 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+type LoginJson struct {
+	Username string `json:"user"`
+	Password string `json:"password"`
+}
+
 type SockIoSIDResponse struct {
 	Sid          string
 	Upgrades     []string
@@ -23,15 +28,13 @@ type SockIoSIDResponse struct {
 	PingTimeout  int
 }
 
-var webSocketAddr = flag.String("addr", "irc.hugot.nl:443", "http service address")
-
 var sockIOGarbageRegExp = regexp.MustCompile("^[^\\[\\{]*|[^\\]\\}]*$")
 
 func removeSockIOGarbage(str string) string {
 	return sockIOGarbageRegExp.ReplaceAllString(str, "")
 }
 
-func getSID() (string, error) {
+func getSID(webSocketAddr *string) (string, error) {
 	res, err := http.Get(fmt.Sprintf("https://%s/socket.io/?EIO=3&transport=polling", *webSocketAddr))
 	if err != nil {
 		return "", err
@@ -50,18 +53,13 @@ func getSID() (string, error) {
 	return data.Sid, nil
 }
 
-func main() {
-	sid, err := getSID()
+func connect(webSocketAddr *string) (*websocket.Conn, *http.Response, error) {
+	sid, err := getSID(webSocketAddr)
 
 	if err != nil {
 		fmt.Println(err)
+		log.Fatal(err)
 	}
-
-	flag.Parse()
-	log.SetFlags(0)
-
-	interrupt := make(chan os.Signal, 1)
-	signal.Notify(interrupt, os.Interrupt)
 
 	uri := url.URL{
 		Scheme:   "wss",
@@ -86,14 +84,90 @@ func main() {
 		},
 	)
 
-	if err != nil {
-		if err == websocket.ErrBadHandshake {
-			log.Printf("handshake failed with status %d", resp.StatusCode)
-		}
+	return socket, resp, err
+}
 
-		log.Fatal("dial:", err)
+const LOGIN_DATA_PREFIX = "42"
+
+func login(socket *websocket.Conn) error {
+	loginJson := &LoginJson{
+		Username: "test-user",
+		Password: "barry",
 	}
 
+	loginJsonString, err := json.Marshal(loginJson)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	loginMessage := fmt.Sprintf("%s[\"auth\",%s]", LOGIN_DATA_PREFIX, loginJsonString)
+
+	fmt.Println(loginMessage)
+
+	socket.WriteMessage(websocket.TextMessage, []byte(loginMessage))
+
+	return nil
+}
+
+type MessageArray struct {
+	MessageType string
+	Message     struct {
+		Msg struct {
+			From struct {
+				Mode string `json:"mode"`
+				Nick string `json:"nick"`
+			} `json:"from"`
+			Time      string `json:"time"`
+			Type      string `json:"type"`
+			Text      string `json:"text"`
+			Highlight bool   `json:"highlight"`
+		} `json:"msg"`
+		Highlight int `json:"highlight"`
+		Unread    int `json:"unread"`
+	} `json:"msg"`
+}
+
+func makeHandleMessageClosure(socket *websocket.Conn) func([]byte) {
+	return func(message []byte) {
+		messageString := string(message)
+
+		if messageString == "3probe" {
+			fmt.Println("Received 3probe, nice! Logging in...")
+			socket.WriteMessage(websocket.TextMessage, []byte("5"))
+			login(socket)
+			return
+		}
+
+		if messageString == "3" {
+			fmt.Println("Received 3, so sending 2 was usefull (or something like that)")
+			return
+		}
+
+		messageArray := &MessageArray{}
+
+		messageSlice := []interface{}{&messageArray.MessageType, &messageArray.Message}
+
+		messageString = removeSockIOGarbage(messageString)
+
+		err := json.Unmarshal([]byte(messageString), &messageSlice)
+
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		fmt.Printf("Received message of type: %s\n", messageArray.MessageType)
+
+		messageStruct := messageArray.Message
+
+		if messageArray.MessageType == "msg" &&
+			messageStruct.Msg.Highlight {
+			fmt.Printf("Received message from %s containing %s\n", messageStruct.Msg.From.Nick, messageStruct.Msg.Text)
+		}
+	}
+}
+
+func startMainLoop(socket *websocket.Conn) {
 	defer func() {
 		err := socket.Close()
 
@@ -104,6 +178,8 @@ func main() {
 
 	done := make(chan struct{})
 
+	handleMessage := makeHandleMessageClosure(socket)
+
 	go func() {
 		defer close(done)
 		for {
@@ -112,9 +188,17 @@ func main() {
 				log.Println("read:", err)
 				return
 			}
-			log.Printf("recv: %s", message)
+
+			handleMessage(message)
 		}
 	}()
+
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt)
+
+	//login(socket)
+
+	socket.WriteMessage(websocket.TextMessage, []byte("2probe"))
 
 	for {
 		select {
@@ -130,11 +214,33 @@ func main() {
 				log.Println("write close:", err)
 				return
 			}
-			select {
-			case <-done:
-			case <-time.After(time.Second):
-			}
+
+		case <-done:
 			return
+
+		case <-time.After(25 * time.Second):
+			fmt.Println("Sending 2")
+			socket.WriteMessage(websocket.TextMessage, []byte("2"))
 		}
 	}
+}
+
+func main() {
+
+	webSocketAddr := flag.String("addr", "irc.hugot.nl:443", "http service address")
+
+	flag.Parse()
+	log.SetFlags(0)
+
+	socket, resp, err := connect(webSocketAddr)
+
+	if err != nil {
+		if err == websocket.ErrBadHandshake {
+			log.Printf("handshake failed with status %d", resp.StatusCode)
+		}
+
+		log.Fatal("dial:", err)
+	}
+
+	startMainLoop(socket)
 }
