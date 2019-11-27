@@ -34,6 +34,7 @@ type Config struct {
 	GotifyKey string `yaml:"gotifykey"`
 	Username  string `yaml:"username"`
 	Password  string `yaml:"password"`
+	Nick      string `yaml:"nick"`
 }
 
 func (c *Config) fromFile(configFile string) error {
@@ -65,6 +66,20 @@ func makeLoginClosure(c *Config) func(*websocket.Conn) error {
 		return nil
 	}
 
+}
+
+func makeLastSentClosure() (func() time.Time, func()) {
+	t := time.Now()
+
+	getTime := func() time.Time {
+		return t
+	}
+
+	setTime := func() {
+		t = time.Now()
+	}
+
+	return getTime, setTime
 }
 
 var sockIOGarbageRegExp = regexp.MustCompile("^[^\\[\\{]*|[^\\]\\}]*$")
@@ -185,7 +200,7 @@ func makeGotifiacationClosure(url *string, apiKey *string) func(*Gotification) {
 	}
 }
 
-func makeHandleMessageClosure(socket *websocket.Conn, gotifyer func(*Gotification), login func(*websocket.Conn) error) func([]byte) {
+func makeHandleMessageClosure(socket *websocket.Conn, gotifyer func(*Gotification), login func(*websocket.Conn) error, getLastSent func() time.Time, setLastSent func()) func([]byte) {
 	return func(message []byte) {
 		messageString := string(message)
 		if messageString == "3probe" {
@@ -216,8 +231,13 @@ func makeHandleMessageClosure(socket *websocket.Conn, gotifyer func(*Gotificatio
 
 		messageStruct := messageArray.Message
 
+		if messageStruct.Msg.From.Nick == nick {
+			setLastSent()
+		}
+
 		if messageArray.MessageType == "msg" &&
-			messageStruct.Msg.Highlight {
+			messageStruct.Msg.Highlight &&
+			time.Since(getLastSent()).Seconds() > 60.0 {
 			fmt.Printf("Received message from %s containing %s\n", messageStruct.Msg.From.Nick, messageStruct.Msg.Text)
 
 			gotification := &Gotification{
@@ -242,7 +262,8 @@ func startMainLoop(socket *websocket.Conn, gotifyer func(*Gotification), c *Conf
 	done := make(chan struct{})
 
 	login := makeLoginClosure(c)
-	handleMessage := makeHandleMessageClosure(socket, gotifyer, login)
+	getLastSent, setLastSent := makeLastSentClosure()
+	handleMessage := makeHandleMessageClosure(socket, gotifyer, login, getLastSent, setLastSent)
 
 	go func() {
 		defer close(done)
@@ -288,6 +309,8 @@ func startMainLoop(socket *websocket.Conn, gotifyer func(*Gotification), c *Conf
 	}
 }
 
+var nick string
+
 func main() {
 	webSocketAddr := flag.String("addr", "irc.hugot.nl:443", "TheLounge host")
 	gotifyUrl := flag.String("gotify-url", "https://gotify.code-cloppers.com", "Gotify HTTP address")
@@ -307,6 +330,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	nick = c.Nick
 
 	gotifyKey := &c.GotifyKey
 
